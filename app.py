@@ -257,7 +257,8 @@ def main() -> None:
             if settings.show_sample_id:
                 print(f"{COLOR_YELLOW}sample_id={last_sample_id}（可用 /fb up|down 反馈）{COLOR_RESET}")
             else:
-                print(f"{COLOR_YELLOW}可用 /fb up|down 反馈上一轮回答{COLOR_RESET}")
+                # print(f"{COLOR_YELLOW}可用 /fb up|down 反馈上一轮回答{COLOR_RESET}")
+                continue
 
         except KeyboardInterrupt:
             print(f"\n{COLOR_CYAN}会话已中断，下次再聊。{COLOR_RESET}")

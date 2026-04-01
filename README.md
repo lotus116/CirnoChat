@@ -59,6 +59,12 @@ python app.py
 │  ├─ memory.py
 │  └─ dataset.py
 ├─ data/
+├─ sft/
+│  ├─ scripts/
+│  │  └─ generate_sft_data.py
+│  ├─ docs/
+│  │  └─ SFT_TRAINING_PLAN.md
+│  └─ data/
 ├─ .env.template
 └─ requirements.txt
 ```
@@ -75,3 +81,24 @@ python app.py
 
 - 启动报 API Key 错误：
   检查 `.env` 是否存在、`DEEPSEEK_API_KEY` 是否为真实值。
+
+## SFT 数据生成
+
+批量生成高质量训练数据（默认输出到 `sft/data`）：
+
+```bash
+python sft/scripts/generate_sft_data.py --mode lite --count 500 --samples-per-request 2
+```
+
+进阶参数：
+
+- `--samples-per-request`：单次生成请求返回的样本条数（默认2，建议2~4）
+- `--mode`：`lite|balanced|strict`（默认 `lite`）
+- `--critic-sample-rate`：质检抽样比例（默认0.35）
+- `--refusal-ratio`：拒绝场景比例（默认0.15）
+- `--llm-retries`：LLM调用失败重试次数（默认2）
+- `--llm-backoff-base`：重试退避基础秒数（默认0.8）
+- `--resume`：断点续跑（保留已有输出并继续到目标count）
+- `--save-rejected`：保存未通过样本到 `sft/data/rejected_raw.jsonl`
+
+统一说明文档：`sft/docs/SFT_TRAINING_PLAN.md`
