@@ -7,6 +7,14 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+def _first_env(names: list[str], default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return default
+
+
 @dataclass
 class AppSettings:
     api_key: str
@@ -29,9 +37,7 @@ class AppSettings:
     def from_env(cls) -> "AppSettings":
         # Keep all runtime knobs centralized so CLI behavior is easy to tune.
         load_dotenv()
-        api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-        if not api_key:
-            raise ValueError("Missing DEEPSEEK_API_KEY. Please set it in .env.")
+        api_key = _first_env(["OPENAI_API_KEY", "DEEPSEEK_API_KEY", "OLLAMA_API_KEY"], default="ollama")
 
         data_dir = Path(os.getenv("DATA_DIR", "data")).resolve()
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -42,8 +48,14 @@ class AppSettings:
 
         return cls(
             api_key=api_key,
-            base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip(),
-            model_name=os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip(),
+            base_url=_first_env(
+                ["OPENAI_BASE_URL", "OLLAMA_BASE_URL", "DEEPSEEK_BASE_URL"],
+                default="http://127.0.0.1:11434/v1",
+            ),
+            model_name=_first_env(
+                ["OPENAI_MODEL", "OLLAMA_MODEL", "DEEPSEEK_MODEL"],
+                default="qwen2.5:3b-instruct",
+            ),
             user_name=os.getenv("USER_NAME", "你").strip(),
             data_dir=data_dir,
             db_path=db_path,

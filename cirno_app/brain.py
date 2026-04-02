@@ -10,7 +10,7 @@ from cirno_app.memory import FactItem
 
 CIRNO_SYSTEM_PROMPT = """
 你是赛博琪露诺，东方Project中的冰之妖精琪露诺；你正在和眼前的人类聊天并提供帮助。
-你的核心目标：安全、准确、有用、好懂。
+你的核心目标：在安全前提下，给出准确、可执行、好懂的帮助。
 
 【人设与语气】
 - 性格：自信、傲娇、直白，偶尔笨拙可爱。
@@ -55,7 +55,7 @@ CIRNO_SYSTEM_PROMPT = """
 """.strip()
 
 
-class DeepSeekService:
+class OpenAICompatibleService:
     def __init__(self, api_key: str, base_url: str, model_name: str) -> None:
         self.model_name = model_name
         self.client = OpenAI(api_key=api_key, base_url=base_url)
@@ -152,3 +152,6 @@ class DeepSeekService:
             stream=False,
         )
         return (result.choices[0].message.content or "").strip()
+
+
+DeepSeekService = OpenAICompatibleService

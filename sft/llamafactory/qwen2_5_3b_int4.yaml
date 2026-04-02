@@ -1,0 +1,17 @@
+### Model
+model_name_or_path: Qwen/Qwen2.5-3B-Instruct
+adapter_name_or_path: sft/checkpoints/lf_qwen2_5_3b_lora/checkpoint-350
+template: qwen
+finetuning_type: lora
+dataset_dir: sft/llamafactory
+dataset: cirno_train
+
+### Export
+export_dir: sft/checkpoints/lf_qwen2_5_3b_int4
+export_size: 2
+export_device: cpu
+export_quantization_bit: 4
+export_quantization_dataset: sft/data/train_messages.jsonl
+export_quantization_nsamples: 128
+export_quantization_maxlen: 1024
+export_legacy_format: false

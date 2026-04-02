@@ -1,0 +1,50 @@
+### Model
+model_name_or_path: Qwen/Qwen2.5-3B-Instruct
+trust_remote_code: true
+
+### Method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_target: q_proj,k_proj,v_proj,o_proj,up_proj,down_proj,gate_proj
+lora_rank: 8
+lora_alpha: 16
+lora_dropout: 0.05
+
+### Dataset
+dataset_dir: sft/llamafactory
+dataset: cirno_train
+eval_dataset: cirno_val
+template: qwen
+cutoff_len: 1024
+max_samples: 1000000
+overwrite_cache: true
+preprocessing_num_workers: 2
+
+### Output
+output_dir: sft/checkpoints/lf_qwen2_5_3b_lora
+logging_steps: 5
+save_steps: 50
+eval_steps: 25
+plot_loss: true
+overwrite_output_dir: true
+save_total_limit: 3
+load_best_model_at_end: true
+metric_for_best_model: eval_loss
+greater_is_better: false
+
+### Train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 8.0e-5
+num_train_epochs: 4.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.06
+bf16: true
+
+### Eval
+per_device_eval_batch_size: 1
+eval_strategy: steps
+
+### Misc
+report_to: none

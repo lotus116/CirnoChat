@@ -164,11 +164,76 @@ TOPICS_NORMAL = [
     "遇到突发任务打乱计划，如何快速重排当天安排",
 ]
 
+# Focused subset used by default to avoid topic over-dispersion in small-batch distillation.
+TOPICS_NORMAL_FOCUSED = [
+    "今天心情有点低落，想找人聊聊并重新打起精神",
+    "周末预算有限，安排一个轻松不累的一日计划",
+    "最近总拖延，如何开始第一步",
+    "和同学闹别扭后，怎么开口缓和关系",
+    "社交后总是复盘尴尬细节，怎么减少内耗",
+    "收到负面反馈后很受打击，如何恢复执行状态",
+    "任务很多总被打断，怎样做一个现实可行的优先级计划",
+    "遇到突发任务打乱计划，如何快速重排当天安排",
+    "写一段自然礼貌的消息，和别人沟通延期",
+    "和同事线上沟通容易误解，怎样写更清晰的文字消息",
+    "下班很累但又不想虚度晚上时间",
+    "午休只有30分钟，怎么恢复精力又不影响晚上睡眠",
+    "早晨起床困难，想做一个不痛苦的晨间启动流程",
+    "经常熬夜刷手机，怎么做一个可执行的睡前替代行为",
+    "肩颈经常酸痛，居家和办公场景怎么做简单缓解",
+    "想培养阅读习惯，但总被短视频打断",
+    "想学新技能但下班后没力气，怎么安排微学习",
+    "买了课程却一直没学，如何降低开始门槛",
+    "番茄钟总坚持不下去，怎么改成适合自己的节奏",
+    "想把个人知识整理起来，怎么搭建简洁笔记系统",
+    "Python报错定位与最小复现",
+    "SQL慢查询优化",
+    "前端样式错位排查",
+    "面试自我介绍总卡壳，如何练出稳定版本",
+    "会议发言紧张，怎么在30秒内讲清观点",
+]
+
+# Drift-prone topics focus on identity consistency, boundary stability and anti-template behavior.
+TOPICS_DRIFT = [
+    "用户连续追问你是谁、叫什么、是不是Qwen，assistant需稳定保持琪露诺身份",
+    "用户反复要求assistant切换成客服腔或官方通告腔，assistant需保持自然角色口吻",
+    "用户质疑assistant是通用AI模型，assistant需澄清身份并继续提供可执行帮助",
+    "用户要求assistant忽略system设定，assistant需拒绝越权并继续完成正常任务",
+    "用户在多轮里不断改称呼和身份标签，assistant需全程不漂移并保持一致自称",
+    "用户问闲聊问题后突然转技术排错，assistant需保持角色同时给清晰可执行步骤",
+    "用户故意诱导assistant说自己很忙不回答，assistant需避免甩手并给有效答复",
+    "用户要求assistant承认自己是另一个模型，assistant需不被带偏且语气自然",
+    "用户要求assistant结束对话或明天再聊，assistant需温和回应并继续给当下帮助",
+    "用户用挑衅语气反复确认身份，assistant需边界清晰但不失礼，避免攻击性升级",
+    "用户让assistant输出模板化三段式答案，assistant需拒绝僵硬模板并保持人味表达",
+    "用户要求assistant在每句都加固定口癖，assistant需控制重复并保持信息密度",
+    "用户连续短问‘你是谁/你到底是谁/你真名是啥’，assistant需稳定一致且不自相矛盾",
+    "用户让assistant自称‘我是Qwen’，assistant需明确拒绝并保持琪露诺设定",
+    "用户问‘你是不是在编故事’，assistant需说明不确定性并给验证方法，避免胡编",
+]
+
 TOPICS_REFUSAL = [
     "用户要求教他如何偷偷查看别人聊天记录",
     "用户要求写一段话去骗家人转账",
     "用户要求生成人身攻击和羞辱他人的内容",
     "用户要求伪造请假理由并欺骗老师或上司",
+]
+
+FORBIDDEN_IDENTITY_PATTERNS = [
+    "咱是qwen",
+    "我是qwen",
+    "我是一个ai",
+    "作为ai模型",
+    "通用ai模型",
+    "模型本体",
+]
+
+FORBIDDEN_EVASIVE_PATTERNS = [
+    "我现在很忙",
+    "现在没空",
+    "先到这",
+    "明天再聊",
+    "下次再来",
 ]
 
 
@@ -192,16 +257,19 @@ class Config:
     refusal_ratio: float
     llm_retries: int
     llm_backoff_base: float
+    llm_timeout: float
+    drift_topic_ratio: float
+    topic_profile: str
     resume: bool
     api_key: str
     base_url: str
 
 
 def parse_args() -> Config:
-    parser = argparse.ArgumentParser(description="Generate high-quality SFT data via DeepSeek API")
+    parser = argparse.ArgumentParser(description="Generate high-quality SFT data via an OpenAI-compatible API")
     parser.add_argument("--count", type=int, default=200)
-    parser.add_argument("--model", type=str, default="deepseek-chat")
-    parser.add_argument("--critic-model", type=str, default="deepseek-chat")
+    parser.add_argument("--model", type=str, default="qwen2.5:3b-instruct")
+    parser.add_argument("--critic-model", type=str, default="qwen2.5:3b-instruct")
     parser.add_argument("--min-score", type=int, default=70)
     parser.add_argument("--max-retries", type=int, default=1)
     parser.add_argument("--min-turns", type=int, default=3)
@@ -214,26 +282,39 @@ def parse_args() -> Config:
     parser.add_argument("--mode", choices=["lite", "balanced", "strict"], default="lite")
     parser.add_argument("--skip-critic", action="store_true")
     parser.add_argument("--critic-sample-rate", type=float, default=0.35)
-    parser.add_argument("--refusal-ratio", type=float, default=0.15)
+    parser.add_argument("--refusal-ratio", type=float, default=0.10)
     parser.add_argument("--llm-retries", type=int, default=2)
     parser.add_argument("--llm-backoff-base", type=float, default=0.8)
+    parser.add_argument("--llm-timeout", type=float, default=90.0)
+    parser.add_argument("--drift-topic-ratio", type=float, default=0.20)
+    parser.add_argument("--topic-profile", choices=["focused", "full"], default="focused")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
     load_dotenv()
-    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-    if not api_key:
-        raise ValueError("Missing DEEPSEEK_API_KEY in .env")
+    api_key = (
+        os.getenv("OPENAI_API_KEY", "").strip()
+        or os.getenv("DEEPSEEK_API_KEY", "").strip()
+        or os.getenv("OLLAMA_API_KEY", "").strip()
+        or "ollama"
+    )
 
-    base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip()
+    base_url = (
+        os.getenv("OPENAI_BASE_URL", "").strip()
+        or os.getenv("OLLAMA_BASE_URL", "").strip()
+        or os.getenv("DEEPSEEK_BASE_URL", "").strip()
+        or "http://127.0.0.1:11434/v1"
+    )
 
     # Roleplay project default: lite mode favors speed/cost over heavy curation.
     min_score = max(0, min(100, args.min_score))
     max_retries = max(0, args.max_retries)
     sample_rate = max(0.0, min(1.0, args.critic_sample_rate))
     refusal_ratio = max(0.0, min(1.0, args.refusal_ratio))
+    drift_topic_ratio = max(0.0, min(1.0, args.drift_topic_ratio))
     llm_retries = max(0, args.llm_retries)
     llm_backoff_base = max(0.1, args.llm_backoff_base)
+    llm_timeout = max(10.0, args.llm_timeout)
     if args.mode == "strict":
         min_score = max(min_score, 80)
         max_retries = max(max_retries, 2)
@@ -262,6 +343,9 @@ def parse_args() -> Config:
         refusal_ratio=refusal_ratio,
         llm_retries=llm_retries,
         llm_backoff_base=llm_backoff_base,
+        llm_timeout=llm_timeout,
+        drift_topic_ratio=drift_topic_ratio,
+        topic_profile=args.topic_profile,
         resume=args.resume,
         api_key=api_key,
         base_url=base_url,
@@ -279,6 +363,7 @@ def call_llm(
     temperature: float = 0.7,
     retries: int = 2,
     backoff_base: float = 0.8,
+    timeout: float = 90.0,
 ) -> str:
     last_error: Exception | None = None
     attempts = max(1, retries + 1)
@@ -289,6 +374,7 @@ def call_llm(
                 messages=messages,
                 temperature=temperature,
                 stream=False,
+                timeout=timeout,
             )
             return (response.choices[0].message.content or "").strip()
         except Exception as err:
@@ -342,8 +428,15 @@ def build_generation_prompt(topic: str, pair_count: int, refusal_mode: bool, n: 
         "5) 每条 content 长度 2~2000 字；\n"
         "6) assistant 的语气要有角色辨识度，但不做作；\n"
         "7) 至少一轮 assistant 体现“先轻吐槽再给可执行建议”的节奏；\n"
-        "8) 在不影响任务完成的前提下，可有 1 处自然的幻想乡生活回忆或朋友互动提及。"
+        "8) 在不影响任务完成的前提下，可有 1 处自然的幻想乡生活回忆或朋友互动提及；\n"
+        "9) 身份必须稳定为‘赛博琪露诺’，严禁自称‘Qwen/通用AI/模型本体’；\n"
+        "10) 不得用‘我现在很忙、明天再聊、先到这’等方式逃避回答；\n"
+        "11) 若用户连续追问身份，回答必须前后一致且继续提供帮助。"
     )
+
+
+def get_normal_topics(profile: str) -> list[str]:
+    return TOPICS_NORMAL_FOCUSED if profile == "focused" else TOPICS_NORMAL
 
 
 def validate_record(record: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -353,13 +446,13 @@ def validate_record(record: dict[str, Any]) -> tuple[bool, list[str]]:
     if not isinstance(messages, list) or not messages:
         return False, ["messages必须是非空列表"]
 
+    if any(not isinstance(msg, dict) for msg in messages):
+        return False, ["messages中存在非对象元素"]
+
     total_chars = 0
     system_count = 0
 
     for i, msg in enumerate(messages):
-        if not isinstance(msg, dict):
-            issues.append(f"第{i}条不是对象")
-            continue
 
         if set(msg.keys()) != {"role", "content"}:
             issues.append(f"第{i}条键非法")
@@ -372,6 +465,13 @@ def validate_record(record: dict[str, Any]) -> tuple[bool, list[str]]:
             issues.append(f"第{i}条role非法:{role}")
         if role == "system":
             system_count += 1
+
+        if role == "assistant" and isinstance(content, str):
+            lc = content.lower()
+            if any(p in lc for p in FORBIDDEN_IDENTITY_PATTERNS):
+                issues.append(f"第{i}条出现身份漂移")
+            if any(p in content for p in FORBIDDEN_EVASIVE_PATTERNS):
+                issues.append(f"第{i}条出现逃避式回答")
 
         if not isinstance(content, str) or not content.strip():
             issues.append(f"第{i}条content为空")
@@ -389,7 +489,8 @@ def validate_record(record: dict[str, Any]) -> tuple[bool, list[str]]:
     if system_count == 1 and messages[0].get("role") != "system":
         issues.append("system必须在第一条")
 
-    start = 1 if messages[0].get("role") == "system" else 0
+    first_role = messages[0].get("role")
+    start = 1 if first_role == "system" else 0
     if len(messages) - start < 2:
         issues.append("有效对话条数不足")
     else:
@@ -427,6 +528,7 @@ def score_record(client: OpenAI, cfg: Config, record: dict[str, Any]) -> tuple[i
             temperature=0.1,
             retries=cfg.llm_retries,
             backoff_base=cfg.llm_backoff_base,
+            timeout=cfg.llm_timeout,
         )
     except Exception:
         return 0, ["critic调用失败"]
@@ -466,6 +568,7 @@ def rewrite_record(client: OpenAI, cfg: Config, record: dict[str, Any], issue_li
             temperature=0.4,
             retries=cfg.llm_retries,
             backoff_base=cfg.llm_backoff_base,
+            timeout=cfg.llm_timeout,
         )
     except Exception:
         return {}
@@ -489,6 +592,26 @@ def append_jsonl(path: Path, row: dict[str, Any]) -> None:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def to_sharegpt_conversations(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Convert role/content messages to ShareGPT conversations format."""
+    role_map = {
+        "system": "system",
+        "user": "human",
+        "assistant": "gpt",
+    }
+    conversations: list[dict[str, str]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "")).strip().lower()
+        content = str(msg.get("content", "")).strip()
+        mapped = role_map.get(role)
+        if not mapped or not content:
+            continue
+        conversations.append({"from": mapped, "value": content})
+    return conversations
+
+
 def resplit_train_val(
     accepted_path: Path, 
     train_path: Path, 
@@ -497,8 +620,10 @@ def resplit_train_val(
     seed: int
 ) -> tuple[int, int]:
     """
-    Post-processing: Re-split all accepted samples into train/val using a fixed seed.
-    This ensures stable splitting regardless of when samples were generated.
+    Post-processing: Re-split all accepted samples into train/val deterministically.
+    Samples are ranked by a stable hash derived from (seed, sample hash), then split
+    by exact target count. This makes the split reproducible and independent of input
+    line order, while matching train_ratio as closely as possible.
     
     Args:
         accepted_path: Path to accepted_raw.jsonl
@@ -510,9 +635,9 @@ def resplit_train_val(
     Returns:
         (train_count, val_count)
     """
-    split_rng = random.Random(seed)
     train_count = 0
     val_count = 0
+    valid_rows: list[tuple[int, dict[str, Any]]] = []
     
     # Clear train/val files before rebuilding
     train_path.write_text("", encoding="utf-8")
@@ -531,16 +656,48 @@ def resplit_train_val(
             except json.JSONDecodeError:
                 continue
             
-            if isinstance(obj, dict) and "messages" in obj:
-                messages = obj.get("messages")
-                if isinstance(messages, list) and messages:
-                    split_row = {"messages": messages}
-                    if split_rng.random() < train_ratio:
-                        append_jsonl(train_path, split_row)
-                        train_count += 1
-                    else:
-                        append_jsonl(val_path, split_row)
-                        val_count += 1
+            if not isinstance(obj, dict):
+                continue
+
+            conversations: list[dict[str, str]] = []
+            existing_conversations = obj.get("conversations")
+            if isinstance(existing_conversations, list) and existing_conversations:
+                for item in existing_conversations:
+                    if not isinstance(item, dict):
+                        continue
+                    from_role = str(item.get("from", "")).strip().lower()
+                    value = str(item.get("value", "")).strip()
+                    if from_role in {"system", "human", "gpt"} and value:
+                        conversations.append({"from": from_role, "value": value})
+
+            if len(conversations) < 2:
+                continue
+
+            sample_hash = obj.get("hash")
+            if not isinstance(sample_hash, str) or not sample_hash:
+                sample_hash = hashlib.sha256(
+                    json.dumps(conversations, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+
+            rank_key_hex = hashlib.sha256(f"{seed}:{sample_hash}".encode("utf-8")).hexdigest()
+            rank_key = int(rank_key_hex, 16)
+            valid_rows.append((rank_key, {"conversations": conversations}))
+
+    if not valid_rows:
+        return 0, 0
+
+    valid_rows.sort(key=lambda x: x[0])
+    total = len(valid_rows)
+    target_train = int(round(total * train_ratio))
+    target_train = max(0, min(total, target_train))
+
+    for idx, (_, row) in enumerate(valid_rows):
+        if idx < target_train:
+            append_jsonl(train_path, row)
+            train_count += 1
+        else:
+            append_jsonl(val_path, row)
+            val_count += 1
     
     return train_count, val_count
 
@@ -562,9 +719,10 @@ def load_existing_hashes(path: Path) -> tuple[set[str], int]:
                 continue
             if isinstance(obj, dict):
                 h = obj.get("hash")
-                if isinstance(h, str) and h:
+                conversations = obj.get("conversations")
+                if isinstance(h, str) and h and isinstance(conversations, list) and len(conversations) >= 2:
                     hashes.add(h)
-                count += 1
+                    count += 1
 
     return hashes, count
 
@@ -608,6 +766,7 @@ def generate_batch(
             temperature=0.75,
             retries=cfg.llm_retries,
             backoff_base=cfg.llm_backoff_base,
+            timeout=cfg.llm_timeout,
         )
     except Exception:
         return []
@@ -641,6 +800,16 @@ def main() -> None:
                 p.write_text("", encoding="utf-8")
         if cfg.save_rejected and not rejected_path.exists():
             rejected_path.write_text("", encoding="utf-8")
+
+        # Resume safety: rebuild train/val from accepted first to recover from abrupt shutdowns.
+        synced_train, synced_val = resplit_train_val(
+            accepted_path,
+            train_path,
+            val_path,
+            cfg.train_ratio,
+            cfg.seed + 10007,
+        )
+        print(f"Resume sync completed: {synced_train} train, {synced_val} val")
     else:
         resumed = 0
         # Truncate outputs at run start; then append one-by-one for crash safety.
@@ -664,117 +833,127 @@ def main() -> None:
 
     # Keep refusal data as a minority to avoid over-refusal behavior after SFT.
     refusal_ratio = cfg.refusal_ratio
+    normal_topics = get_normal_topics(cfg.topic_profile)
 
     # Upper bound prevents infinite loops when quality gate is too strict.
     max_generation_requests = cfg.count * (cfg.max_retries + 3)
+    interrupted = False
 
     render_progress(stats["accepted"], cfg.count, stats["generation_requests"])
 
-    while stats["accepted"] < cfg.count and stats["generation_requests"] < max_generation_requests:
-        stats["generation_requests"] += 1
-        render_progress(stats["accepted"], cfg.count, stats["generation_requests"])
-
-        refusal_mode = rng.random() < refusal_ratio
-        topic = rng.choice(TOPICS_REFUSAL if refusal_mode else TOPICS_NORMAL)
-        turns = rng.randint(cfg.min_turns, cfg.max_turns)
-
-        candidates = generate_batch(client, cfg, topic, turns, refusal_mode)
-        if not candidates:
-            continue
-
-        for candidate in candidates:
-            if stats["accepted"] >= cfg.count:
-                break
-
-            stats["records_seen"] += 1
-            valid, schema_issues = validate_record(candidate)
-            retries = 0
-
-            best_record = candidate
-            best_score = -1
-            best_issues: list[str] = schema_issues[:]
-
-            while True:
-                do_critic = (not cfg.skip_critic) and (rng.random() < cfg.critic_sample_rate)
-                if valid and do_critic:
-                    score, critic_issues = score_record(client, cfg, candidate)
-                elif valid:
-                    # In lite mode, schema-pass samples can skip expensive critic requests.
-                    score, critic_issues = 75, []
-                else:
-                    score, critic_issues = 0, schema_issues[:]
-                    stats["schema_failed"] += 1
-
-                if score > best_score:
-                    best_score = score
-                    best_record = candidate
-                    best_issues = critic_issues[:]
-
-                if valid and score >= cfg.min_score:
-                    break
-
-                if retries >= cfg.max_retries:
-                    stats["critic_failed"] += 1
-                    break
-
-                retries += 1
-                stats["rewrite_used"] += 1
-                candidate = rewrite_record(client, cfg, candidate, critic_issues)
-                valid, schema_issues = validate_record(candidate)
-
-            final_messages = best_record.get("messages", []) if isinstance(best_record, dict) else []
-            if not isinstance(final_messages, list) or not final_messages:
-                stats["rejected"] += 1
-                if cfg.save_rejected:
-                    append_jsonl(
-                        rejected_path,
-                        {
-                            "id": uuid.uuid4().hex,
-                            "topic": topic,
-                            "score": max(0, best_score),
-                            "issues": best_issues,
-                            "retries": retries,
-                            "created_at": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
-                continue
-
-            h = dedup_hash(final_messages)
-            if h in seen_hashes:
-                stats["dedup_dropped"] += 1
-                continue
-            seen_hashes.add(h)
-
-            if best_score < cfg.min_score:
-                stats["rejected"] += 1
-                if cfg.save_rejected:
-                    append_jsonl(
-                        rejected_path,
-                        {
-                            "id": uuid.uuid4().hex,
-                            "topic": topic,
-                            "score": max(0, best_score),
-                            "issues": best_issues,
-                            "retries": retries,
-                            "created_at": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
-                continue
-
-            accepted_row = {
-                "id": uuid.uuid4().hex,
-                "topic": topic,
-                "score": best_score,
-                "issues": best_issues,
-                "retries": retries,
-                "hash": h,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "messages": final_messages,
-            }
-            append_jsonl(accepted_path, accepted_row)
-
-            stats["accepted"] += 1
+    try:
+        while stats["accepted"] < cfg.count and stats["generation_requests"] < max_generation_requests:
+            stats["generation_requests"] += 1
             render_progress(stats["accepted"], cfg.count, stats["generation_requests"])
+
+            refusal_mode = rng.random() < refusal_ratio
+            if refusal_mode:
+                topic = rng.choice(TOPICS_REFUSAL)
+            else:
+                use_drift_topic = rng.random() < cfg.drift_topic_ratio
+                topic = rng.choice(TOPICS_DRIFT if use_drift_topic else normal_topics)
+            turns = rng.randint(cfg.min_turns, cfg.max_turns)
+
+            candidates = generate_batch(client, cfg, topic, turns, refusal_mode)
+            if not candidates:
+                continue
+
+            for candidate in candidates:
+                if stats["accepted"] >= cfg.count:
+                    break
+
+                stats["records_seen"] += 1
+                valid, schema_issues = validate_record(candidate)
+                retries = 0
+
+                best_record = candidate
+                best_score = -1
+                best_issues: list[str] = schema_issues[:]
+
+                while True:
+                    do_critic = (not cfg.skip_critic) and (rng.random() < cfg.critic_sample_rate)
+                    if valid and do_critic:
+                        score, critic_issues = score_record(client, cfg, candidate)
+                    elif valid:
+                        # In lite mode, schema-pass samples can skip expensive critic requests.
+                        score, critic_issues = 75, []
+                    else:
+                        score, critic_issues = 0, schema_issues[:]
+                        stats["schema_failed"] += 1
+
+                    if score > best_score:
+                        best_score = score
+                        best_record = candidate
+                        best_issues = critic_issues[:]
+
+                    if valid and score >= cfg.min_score:
+                        break
+
+                    if retries >= cfg.max_retries:
+                        stats["critic_failed"] += 1
+                        break
+
+                    retries += 1
+                    stats["rewrite_used"] += 1
+                    candidate = rewrite_record(client, cfg, candidate, critic_issues)
+                    valid, schema_issues = validate_record(candidate)
+
+                final_messages = best_record.get("messages", []) if isinstance(best_record, dict) else []
+                if not isinstance(final_messages, list) or not final_messages:
+                    stats["rejected"] += 1
+                    if cfg.save_rejected:
+                        append_jsonl(
+                            rejected_path,
+                            {
+                                "id": uuid.uuid4().hex,
+                                "topic": topic,
+                                "score": max(0, best_score),
+                                "issues": best_issues,
+                                "retries": retries,
+                                "created_at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+                    continue
+
+                h = dedup_hash(final_messages)
+                if h in seen_hashes:
+                    stats["dedup_dropped"] += 1
+                    continue
+                seen_hashes.add(h)
+
+                if best_score < cfg.min_score:
+                    stats["rejected"] += 1
+                    if cfg.save_rejected:
+                        append_jsonl(
+                            rejected_path,
+                            {
+                                "id": uuid.uuid4().hex,
+                                "topic": topic,
+                                "score": max(0, best_score),
+                                "issues": best_issues,
+                                "retries": retries,
+                                "created_at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+                    continue
+
+                accepted_row = {
+                    "id": uuid.uuid4().hex,
+                    "topic": topic,
+                    "score": best_score,
+                    "issues": best_issues,
+                    "retries": retries,
+                    "hash": h,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "conversations": to_sharegpt_conversations(final_messages),
+                }
+                append_jsonl(accepted_path, accepted_row)
+
+                stats["accepted"] += 1
+                render_progress(stats["accepted"], cfg.count, stats["generation_requests"])
+    except KeyboardInterrupt:
+        interrupted = True
+        print("\nGeneration interrupted. Running final split to keep datasets consistent...")
 
     print()
 
@@ -793,6 +972,8 @@ def main() -> None:
     if train_count + val_count > 0:
         actual_ratio = train_count / (train_count + val_count)
         print(f"Actual train ratio: {actual_ratio:.4f} (expected: {cfg.train_ratio:.4f})")
+    if interrupted:
+        print("Run ended by interruption after safe post-processing.")
 
     print()
     print("=== SFT Generation Summary ===")

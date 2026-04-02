@@ -1,0 +1,10 @@
+{
+  "cirno_train": {
+    "file_name": "../data/train_messages.jsonl",
+    "formatting": "sharegpt"
+  },
+  "cirno_val": {
+    "file_name": "../data/val_messages.jsonl",
+    "formatting": "sharegpt"
+  }
+}

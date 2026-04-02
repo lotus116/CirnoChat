@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from uuid import uuid4
 
-from cirno_app.brain import DeepSeekService
+from cirno_app.brain import OpenAICompatibleService
 from cirno_app.config import AppSettings
 from cirno_app.dataset import DatasetLogger
 from cirno_app.memory import MemoryStore
@@ -164,7 +164,7 @@ def main() -> None:
         sys.exit(1)
 
     memory = MemoryStore(settings.db_path)
-    brain = DeepSeekService(
+    brain = OpenAICompatibleService(
         api_key=settings.api_key,
         base_url=settings.base_url,
         model_name=settings.model_name,
