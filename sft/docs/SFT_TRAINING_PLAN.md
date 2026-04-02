@@ -265,10 +265,11 @@ llamafactory-cli export sft/llamafactory/qwen2_5_3b_int4.yaml
 如果你选择 Ollama，推荐顺序是：先确认合并版能正常对话，再把合并目录导入 Ollama，最后让项目通过 OpenAI 兼容 URL 调用。
 
 1. 确认合并目录存在：`sft/checkpoints/lf_qwen2_5_3b_merged`
-2. 用 LLaMA-Factory 生成的 `Modelfile` 创建 Ollama 模型：
+2. 进入合并目录，再用 LLaMA-Factory 生成的 `Modelfile` 创建 Ollama 模型：
 
 ```bash
-ollama create cirno -f sft/checkpoints/lf_qwen2_5_3b_merged/Modelfile
+cd sft/checkpoints/lf_qwen2_5_3b_merged
+ollama create cirno -f Modelfile
 ```
 
 3. 启动或确认 Ollama 服务可用：

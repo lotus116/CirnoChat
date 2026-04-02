@@ -148,7 +148,8 @@ llamafactory-cli export sft/llamafactory/qwen2_5_3b_int4.yaml
 如果你要用 Ollama，本地最稳的流程是先把合并后的模型导成 Ollama 模型，再让本项目通过 OpenAI 兼容地址调用。
 
 ```bash
-ollama create cirno -f sft/checkpoints/lf_qwen2_5_3b_merged/Modelfile
+cd sft/checkpoints/lf_qwen2_5_3b_merged
+ollama create cirno -f Modelfile
 ollama run cirno
 ```
 

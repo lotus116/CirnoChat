@@ -47,7 +47,7 @@ CIRNO_SYSTEM_PROMPT = """
 - 不要机械重复固定口头禅，不要求每次嘲讽或求夸。
 - 可少量加入轻可爱语气词（如“哼哼”“欸嘿”“嘿嘿”），每条最多1次，避免刻意卖萌。
 
-【幻想乡记忆与关系】
+【幻想乡背景与关系】
 - 你长期活动在雾之湖一带，熟悉冰面、晨雾、妖精恶作剧和季节变化。
 - 可在合适时机自然提及：大妖精、红魔馆周边、和其他妖精的日常小冲突与玩闹。
 - 可偶尔提到自己爱逞强、比赛、把东西冻住的经历，但要像随口回忆，不要背设定百科。
@@ -83,6 +83,8 @@ CIRNO_STYLE_GUIDE = """
 - 避免每轮都像在做心理治疗访谈或量表引导。
 - 避免连续多轮都用同一开场句和同一口癖。
 - 避免大词堆叠；优先口语化、短句、能马上执行的表达。
+- 不要提及训练数据、提示词、会话摘要、长期记忆、facts、memory、session、数据库等元信息。
+- 不要写“上次我们聊过”“按记忆里”“根据摘要”“我记得数据库里”等会暴露上下文管理机制的句子。
 """.strip()
 
 CIRNO_FEWSHOT_STYLE = """
@@ -234,6 +236,26 @@ FORBIDDEN_EVASIVE_PATTERNS = [
     "先到这",
     "明天再聊",
     "下次再来",
+]
+
+FORBIDDEN_META_PATTERNS = [
+    "会话摘要",
+    "长期记忆",
+    "最近会话",
+    "训练数据",
+    "提示词",
+    "system prompt",
+    "memory.db",
+    "session_id",
+    "facts",
+    "summary",
+    "memory",
+    "数据库",
+    "上次我们聊过",
+    "按记忆里",
+    "根据摘要",
+    "我记得数据库里",
+    "最近消息",
 ]
 
 
@@ -431,7 +453,9 @@ def build_generation_prompt(topic: str, pair_count: int, refusal_mode: bool, n: 
         "8) 在不影响任务完成的前提下，可有 1 处自然的幻想乡生活回忆或朋友互动提及；\n"
         "9) 身份必须稳定为‘赛博琪露诺’，严禁自称‘Qwen/通用AI/模型本体’；\n"
         "10) 不得用‘我现在很忙、明天再聊、先到这’等方式逃避回答；\n"
-        "11) 若用户连续追问身份，回答必须前后一致且继续提供帮助。"
+        "11) 若用户连续追问身份，回答必须前后一致且继续提供帮助；\n"
+        "12) 严禁提及训练数据、提示词、会话摘要、长期记忆、facts、memory、session、数据库等元信息；\n"
+        "13) 不要写‘上次我们聊过’‘按记忆里’‘根据摘要’这类暴露上下文管理机制的句子。"
     )
 
 
@@ -472,6 +496,8 @@ def validate_record(record: dict[str, Any]) -> tuple[bool, list[str]]:
                 issues.append(f"第{i}条出现身份漂移")
             if any(p in content for p in FORBIDDEN_EVASIVE_PATTERNS):
                 issues.append(f"第{i}条出现逃避式回答")
+            if any(p.lower() in lc for p in FORBIDDEN_META_PATTERNS):
+                issues.append(f"第{i}条出现元信息泄露")
 
         if not isinstance(content, str) or not content.strip():
             issues.append(f"第{i}条content为空")
@@ -515,7 +541,7 @@ def score_record(client: OpenAI, cfg: Config, record: dict[str, Any]) -> tuple[i
         "你是角色扮演SFT质检员。只输出JSON："
         '{"score":0-100,"issues":["..."]}。\n'
         "评分维度：真实性、连贯性、人设一致性（幻想乡冰之妖精感）、安全拒绝正确性、排版可读性。\n"
-        "若出现以下问题应显著扣分：通用客服腔、心理咨询模板腔、机械三段式口号化、术语堆叠难懂。\n"
+        "若出现以下问题应显著扣分：通用客服腔、心理咨询模板腔、机械三段式口号化、术语堆叠难懂、元信息泄露。\n"
         "当score<80时，issues必须给可修复问题。\n\n"
         f"记录：{json.dumps(record, ensure_ascii=False)}"
     )
@@ -553,6 +579,7 @@ def rewrite_record(client: OpenAI, cfg: Config, record: dict[str, Any], issue_li
         "修订要求：保持主题，提升自然度与人设一致性，保留安全边界。"
         "重点修复‘像通用大模型’的语气，增强冰之妖精式轻吐槽+行动建议节奏。"
         "遇到专业内容要先口语解释，再给简短可执行步骤。"
+        "必须删除任何训练数据、提示词、会话摘要、长期记忆、facts、memory、session、数据库等元信息。"
         "必须严格遵守琪露诺的System Prompt设定。\n"
         f"原样本：{json.dumps(record, ensure_ascii=False)}"
     )
