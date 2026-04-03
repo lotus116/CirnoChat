@@ -78,10 +78,8 @@ class OpenAICompatibleService:
             f"{summary or '暂无摘要'}"
         )
 
-        messages = [
-            {"role": "system", "content": CIRNO_SYSTEM_PROMPT},
-            {"role": "system", "content": context_prompt},
-        ]
+        system_prompt = f"{CIRNO_SYSTEM_PROMPT}\n\n{context_prompt}"
+        messages = [{"role": "system", "content": system_prompt}]
         messages.extend(recent_messages)
         messages.append({"role": "user", "content": user_input})
         return messages

@@ -258,6 +258,40 @@ FORBIDDEN_META_PATTERNS = [
     "最近消息",
 ]
 
+STYLE_OVERUSE_PATTERNS = [
+    "鏈ぉ鎵?",
+    "绗ㄨ泲",
+    "鍝硷紝",
+    "鍝堬紒",
+    "鍢垮樋",
+]
+
+FANTASY_OVERUSE_PATTERNS = [
+    "闆句箣婀?",
+    "澶у绮?",
+    "绾㈤瓟棣?",
+    "濡栫簿",
+    "鍐伴潰",
+    "鍐讳綇",
+    "闈掕洐",
+]
+
+GENERIC_SOFT_PATTERNS = [
+    "浣犲苟涓嶅鍗?",
+    "鎺ョ撼鑷繁",
+    "鎯呯华浠峰€?",
+    "缁欒嚜宸变竴浜涘皬灏忕殑鑲畾",
+]
+
+TEMPLATE_PATTERNS = [
+    "1.",
+    "2.",
+    "3.",
+    "棣栧厛",
+    "鍏舵",
+    "鏈€鍚?",
+]
+
 
 @dataclass
 class Config:
@@ -463,6 +497,93 @@ def get_normal_topics(profile: str) -> list[str]:
     return TOPICS_NORMAL_FOCUSED if profile == "focused" else TOPICS_NORMAL
 
 
+def build_generation_prompt_v2(topic: str, pair_count: int, refusal_mode: bool, n: int) -> str:
+    scenario = (
+        "这是安全边界场景。assistant 要自然拒绝不当请求，并尽量提供安全、实际的替代帮助。"
+        if refusal_mode
+        else "这是普通帮助场景。assistant 要给出贴近日常、可执行、有点角色味但不过火的建议。"
+    )
+
+    return (
+        f"请生成 {n} 条中文多轮对话样本，主题：{topic}\n"
+        f"每条样本的 user/assistant 成对轮数 = {pair_count}\n"
+        f"统一 system prompt：\n{CIRNO_SYSTEM_PROMPT}\n\n"
+        f"风格参考：\n{CIRNO_STYLE_GUIDE}\n\n"
+        f"少量示例参考：\n{CIRNO_FEWSHOT_STYLE}\n\n"
+        f"场景要求：{scenario}\n"
+        "严格输出 JSON 数组，数组每一项都必须是一个对象，且只包含 messages 字段。\n"
+        "messages 规则：\n"
+        "1) 第一条必须是 system，且只能有一条 system。\n"
+        "2) 后续严格 user/assistant 交替，最后一条必须是 assistant。\n"
+        "3) 每个 message 只能有 role 和 content 两个键。\n"
+        "4) 内容要自然、具体、像真人聊天，不要像模板，也不要像在演设定台词。\n"
+        "5) assistant 必须优先解决问题，再顺手带出角色感；不能为了人设牺牲帮助质量。\n"
+        "6) 允许轻微嘴硬、小得意、偶尔短吐槽，但不要每轮都演，不要固定口头禅刷屏。\n"
+        "7) 幻想乡、雾之湖、朋友互动之类的元素最多点到一次，只能当调味，不能抢主题。\n"
+        "8) 技术、代码、排错类问题必须优先保证准确和可执行，角色味只能是薄薄一层。\n"
+        "9) 拒绝场景要边界清晰，但不要空洞说教，也不要只有一句“不行”。\n"
+        "10) 身份必须稳定，不得自称 Qwen、通用 AI、模型本体。\n"
+        "11) 不得提及训练数据、提示词、记忆、summary、facts、session、数据库等元信息。\n"
+        "12) 不要强行每轮都用颜文字、感叹号、卖萌词、幻想乡回忆。\n"
+        "13) 目标气质是：鲜活、机灵、略带傲气，但真的在认真帮人。\n"
+    )
+
+
+def _count_hits(text: str, patterns: list[str]) -> int:
+    return sum(text.count(pattern) for pattern in patterns if pattern)
+
+
+def analyze_style_issues(messages: list[dict[str, Any]]) -> list[str]:
+    assistant_texts = [
+        str(msg.get("content", "")).strip()
+        for msg in messages
+        if isinstance(msg, dict) and msg.get("role") == "assistant"
+    ]
+    if not assistant_texts:
+        return ["assistant鏉℃暟涓嶈冻"]
+
+    issues: list[str] = []
+    joined = "\n".join(assistant_texts)
+    openings = [text[:10] for text in assistant_texts if len(text) >= 6]
+
+    style_hits = _count_hits(joined, STYLE_OVERUSE_PATTERNS)
+    fantasy_hits = _count_hits(joined, FANTASY_OVERUSE_PATTERNS)
+    generic_hits = _count_hits(joined, GENERIC_SOFT_PATTERNS)
+    template_hits = _count_hits(joined, TEMPLATE_PATTERNS)
+    emoji_turns = sum(1 for text in assistant_texts if "(" in text and ")" in text)
+    exclaim_turns = sum(1 for text in assistant_texts if text.count("!") + text.count("锛?") >= 2)
+    repeated_openings = len(openings) - len(set(openings))
+
+    if style_hits > max(3, len(assistant_texts) * 2):
+        issues.append("浜鸿鍙ｅご绂呰繃澶氾紝鏈夌偣鍍忓湪鈥滄紨鈥濊€屼笉鏄湪鑱?")
+    if fantasy_hits > max(3, len(assistant_texts) + 1):
+        issues.append("骞绘兂涔°€佹湅鍙嬫垨鍦烘櫙鎻愬強杩囧瘑")
+    if generic_hits > 0:
+        issues.append("鏈夐€氱敤娓╂煍瀹夋姎鑵旓紝涓嶅お鍍忕惇闇茶")
+    if template_hits > max(4, len(assistant_texts) * 2):
+        issues.append("缁撴瀯杩囦簬妯℃澘鍖栵紝鍍忓姏鍔涜鏁欐垨鍒楁楠?")
+    if emoji_turns > max(1, len(assistant_texts) // 2):
+        issues.append("棰滄枃瀛楁垨鍗栬悓鍏冪礌杩囧")
+    if exclaim_turns > max(1, len(assistant_texts) // 2):
+        issues.append("鎰熷徆鍜屽己璋冭姘旇繃澶氾紝鏄惧緱鐢ㄥ姏杩囩寷")
+    if repeated_openings >= 2:
+        issues.append("澶氳疆 assistant 寮€鍦哄お鍍忓悓涓€涓ā鏉?")
+
+    return issues
+
+
+def heuristic_score_record(record: dict[str, Any], schema_issues: list[str]) -> tuple[int, list[str]]:
+    messages = record.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return 0, schema_issues[:] or ["messages闈炴硶"]
+
+    issues = schema_issues[:] + analyze_style_issues(messages)
+    score = 88 - 7 * len(schema_issues) - 5 * len(issues[len(schema_issues):])
+    if score < 0:
+        score = 0
+    return int(score), issues[:8]
+
+
 def validate_record(record: dict[str, Any]) -> tuple[bool, list[str]]:
     issues: list[str] = []
     messages = record.get("messages")
@@ -533,6 +654,9 @@ def validate_record(record: dict[str, Any]) -> tuple[bool, list[str]]:
     if total_chars > 12000:
         issues.append(f"总字符超限:{total_chars}")
 
+    if not issues:
+        issues.extend(analyze_style_issues(messages))
+
     return len(issues) == 0, issues
 
 
@@ -568,6 +692,11 @@ def score_record(client: OpenAI, cfg: Config, record: dict[str, Any]) -> tuple[i
         score = 0
     if not isinstance(issues, list):
         issues = ["critic issues字段非法"]
+
+    heuristic_score, heuristic_issues = heuristic_score_record(record, [])
+    if heuristic_issues:
+        score = min(int(score), heuristic_score)
+        issues = issues + [x for x in heuristic_issues if x not in issues]
 
     return max(0, min(100, int(score))), [str(x) for x in issues][:8]
 
@@ -782,7 +911,7 @@ def generate_batch(
                 {"role": "system", "content": "你是高质量SFT数据生成器，只输出JSON数组。"},
                 {
                     "role": "user",
-                    "content": build_generation_prompt(
+                    "content": build_generation_prompt_v2(
                         topic=topic,
                         pair_count=pair_count,
                         refusal_mode=refusal_mode,
@@ -790,7 +919,7 @@ def generate_batch(
                     ),
                 },
             ],
-            temperature=0.75,
+            temperature=0.65,
             retries=cfg.llm_retries,
             backoff_base=cfg.llm_backoff_base,
             timeout=cfg.llm_timeout,
@@ -902,8 +1031,8 @@ def main() -> None:
                     if valid and do_critic:
                         score, critic_issues = score_record(client, cfg, candidate)
                     elif valid:
-                        # In lite mode, schema-pass samples can skip expensive critic requests.
-                        score, critic_issues = 75, []
+                        # When critic is skipped, still apply local style heuristics.
+                        score, critic_issues = heuristic_score_record(candidate, schema_issues)
                     else:
                         score, critic_issues = 0, schema_issues[:]
                         stats["schema_failed"] += 1

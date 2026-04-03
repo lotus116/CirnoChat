@@ -169,8 +169,15 @@ class MemoryStore:
                 (session_id, limit),
             ).fetchall()
 
-        rows = list(reversed(rows))
-        return [{"role": row["role"], "content": row["content"]} for row in rows]
+        messages = [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+
+        # When truncating a long session, keep only complete user/assistant turns.
+        while messages and messages[0]["role"] != "user":
+            messages.pop(0)
+        while messages and messages[-1]["role"] != "assistant":
+            messages.pop()
+
+        return messages
 
     def save_summary(self, session_id: str, summary: str) -> None:
         with self._conn() as conn:

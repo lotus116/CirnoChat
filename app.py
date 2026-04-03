@@ -215,6 +215,8 @@ def main() -> None:
             facts = memory.list_facts(limit=settings.max_facts, include_inactive=False)
             summary = memory.get_latest_summary(session_id)
             recent_messages = memory.get_recent_messages(session_id, settings.max_recent_turns)
+            if recent_messages and recent_messages[-1]["role"] == "user":
+                recent_messages = recent_messages[:-1]
             llm_messages = brain.build_chat_messages(
                 user_input=user_input,
                 recent_messages=recent_messages,
