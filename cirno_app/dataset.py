@@ -10,6 +10,10 @@ class DatasetLogger:
     def __init__(self, dataset_path: Path, feedback_path: Path) -> None:
         self.dataset_path = dataset_path
         self.feedback_path = feedback_path
+        self.dataset_path.parent.mkdir(parents=True, exist_ok=True)
+        self.feedback_path.parent.mkdir(parents=True, exist_ok=True)
+        self.dataset_path.touch(exist_ok=True)
+        self.feedback_path.touch(exist_ok=True)
 
     def _normalize_messages(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
         normalized: list[dict[str, str]] = []
@@ -37,8 +41,10 @@ class DatasetLogger:
         messages: list[dict[str, str]],
         metadata: dict,
     ) -> str:
-        sample_id = uuid4().hex
         clean_messages = self._normalize_messages(messages)
+        if not clean_messages:
+            return ""
+        sample_id = uuid4().hex
         payload = {
             "sample_id": sample_id,
             "created_at": datetime.now(timezone.utc).isoformat(),

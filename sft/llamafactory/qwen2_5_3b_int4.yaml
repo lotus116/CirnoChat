@@ -1,6 +1,6 @@
 ### Model
 model_name_or_path: Qwen/Qwen2.5-3B-Instruct
-adapter_name_or_path: sft/checkpoints/lf_qwen2_5_3b_lora/checkpoint-350
+adapter_name_or_path: sft/checkpoints/lf_qwen2_5_3b_lora
 template: qwen
 finetuning_type: lora
 dataset_dir: sft/llamafactory

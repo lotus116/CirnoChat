@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import json
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Iterable
 
 @dataclass
 class FactItem:
+    session_id: str
     key: str
     value: str
     confidence: float
@@ -29,76 +31,147 @@ class SessionItem:
 class MemoryStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        self._memory_mode = str(db_path) == ":memory:"
+        self._shared_conn: sqlite3.Connection | None = None
+        if not self._memory_mode:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
     def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        if self._memory_mode:
+            if self._shared_conn is None:
+                self._shared_conn = sqlite3.connect(":memory:", timeout=30)
+                self._shared_conn.row_factory = sqlite3.Row
+                self._shared_conn.execute("PRAGMA foreign_keys = ON")
+                self._shared_conn.execute("PRAGMA busy_timeout = 30000")
+            return self._shared_conn
+
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 30000")
         return conn
 
+    def _ensure_column(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        column_def: str,
+    ) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column_name not in columns:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
+
     def _init_db(self) -> None:
-        with self._conn() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sessions (
-                    session_id TEXT PRIMARY KEY,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS facts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    canonical_key TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    normalized_value TEXT NOT NULL,
-                    confidence REAL NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'active',
-                    source_message_id INTEGER,
-                    superseded_by INTEGER,
-                    valid_from TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    valid_to TEXT,
-                    decay_score REAL NOT NULL DEFAULT 1.0,
-                    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_facts_key_status ON facts(canonical_key, status)"
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS summaries (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS fact_actions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    action_type TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
+        last_error: sqlite3.OperationalError | None = None
+        for attempt in range(2):
+            try:
+                with self._conn() as conn:
+                    try:
+                        conn.execute("PRAGMA journal_mode = WAL")
+                    except sqlite3.OperationalError:
+                        # Some restricted Windows directories reject WAL; fall back to default journal mode.
+                        pass
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS sessions (
+                            session_id TEXT PRIMARY KEY,
+                            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS messages (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+                            role TEXT NOT NULL,
+                            content TEXT NOT NULL,
+                            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            CHECK(role IN ('user', 'assistant'))
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS facts (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+                            canonical_key TEXT NOT NULL,
+                            value TEXT NOT NULL,
+                            normalized_value TEXT NOT NULL,
+                            confidence REAL NOT NULL,
+                            status TEXT NOT NULL DEFAULT 'active',
+                            source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+                            superseded_by INTEGER,
+                            valid_from TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            valid_to TEXT,
+                            decay_score REAL NOT NULL DEFAULT 1.0,
+                            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            CHECK(status IN ('active', 'superseded', 'expired', 'deleted')),
+                            CHECK(confidence >= 0.0 AND confidence <= 1.0),
+                            CHECK(decay_score >= 0.0 AND decay_score <= 1.0)
+                        )
+                        """
+                    )
+                    self._ensure_column(conn, "facts", "session_id", "TEXT")
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_messages_session_id_id ON messages(session_id, id)"
+                    )
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_facts_session_key_status ON facts(session_id, canonical_key, status)"
+                    )
+                    conn.execute(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_one_active_per_key
+                        ON facts(session_id, canonical_key)
+                        WHERE status = 'active' AND session_id IS NOT NULL
+                        """
+                    )
+                    conn.execute(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_one_active_per_value
+                        ON facts(session_id, canonical_key, normalized_value)
+                        WHERE status = 'active' AND session_id IS NOT NULL
+                        """
+                    )
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS summaries (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+                            summary TEXT NOT NULL,
+                            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_summaries_session_id_id ON summaries(session_id, id)"
+                    )
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS fact_actions (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            action_type TEXT NOT NULL,
+                            payload_json TEXT NOT NULL,
+                            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                return
+            except sqlite3.OperationalError as exc:
+                last_error = exc
+                if attempt == 0:
+                    time.sleep(0.2)
+                    continue
+                raise
+        if last_error is not None:
+            raise last_error
 
     def get_latest_session_id(self) -> str | None:
         with self._conn() as conn:
@@ -129,7 +202,7 @@ class MemoryStore:
                 FROM sessions s
                 LEFT JOIN messages m ON m.session_id = s.session_id
                 GROUP BY s.session_id, s.created_at
-                ORDER BY s.created_at DESC
+                ORDER BY COALESCE(MAX(m.id), 0) DESC, s.created_at DESC
                 LIMIT ?
                 """,
                 (limit,),
@@ -155,6 +228,11 @@ class MemoryStore:
             )
             return int(cur.lastrowid)
 
+    def delete_message(self, message_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+            return cur.rowcount > 0
+
     def get_recent_messages(self, session_id: str, turns: int) -> list[dict[str, str]]:
         limit = max(turns * 2, 2)
         with self._conn() as conn:
@@ -176,10 +254,20 @@ class MemoryStore:
             messages.pop(0)
         while messages and messages[-1]["role"] != "assistant":
             messages.pop()
+        normalized: list[dict[str, str]] = []
+        expected_role = "user"
+        for item in messages:
+            if item["role"] != expected_role:
+                continue
+            normalized.append(item)
+            expected_role = "assistant" if expected_role == "user" else "user"
 
-        return messages
+        if normalized and normalized[-1]["role"] == "assistant":
+            return normalized
+        return []
 
     def save_summary(self, session_id: str, summary: str) -> None:
+        self.ensure_session(session_id)
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO summaries (session_id, summary) VALUES (?, ?)",
@@ -229,7 +317,7 @@ class MemoryStore:
     def _snapshot_fact(self, conn: sqlite3.Connection, fact_id: int) -> dict | None:
         row = conn.execute(
             """
-            SELECT id, canonical_key, value, normalized_value, confidence, status,
+            SELECT id, session_id, canonical_key, value, normalized_value, confidence, status,
                    superseded_by, valid_to, decay_score
             FROM facts
             WHERE id = ?
@@ -240,6 +328,7 @@ class MemoryStore:
             return None
         return {
             "id": row["id"],
+            "session_id": row["session_id"],
             "canonical_key": row["canonical_key"],
             "value": row["value"],
             "normalized_value": row["normalized_value"],
@@ -251,8 +340,15 @@ class MemoryStore:
         }
 
     # Versioned upsert: same key + same value -> reinforce; same key + different value -> supersede old.
-    def upsert_facts(self, facts: Iterable[FactItem], source_message_id: int | None = None) -> None:
+    def upsert_facts(
+        self,
+        session_id: str,
+        facts: Iterable[FactItem],
+        source_message_id: int | None = None,
+    ) -> None:
+        self.ensure_session(session_id)
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             for fact in facts:
                 canonical_key = self._normalize_key(fact.key)
                 normalized_value = self._normalize_value(fact.value)
@@ -261,11 +357,11 @@ class MemoryStore:
                     """
                     SELECT id
                     FROM facts
-                    WHERE canonical_key = ? AND normalized_value = ? AND status = 'active'
+                    WHERE session_id = ? AND canonical_key = ? AND normalized_value = ? AND status = 'active'
                     ORDER BY id DESC
                     LIMIT 1
                     """,
-                    (canonical_key, normalized_value),
+                    (session_id, canonical_key, normalized_value),
                 ).fetchone()
                 if existing_exact:
                     self._touch_fact(conn, existing_exact["id"], fact.confidence)
@@ -275,24 +371,45 @@ class MemoryStore:
                     """
                     SELECT id
                     FROM facts
-                    WHERE canonical_key = ? AND status = 'active'
+                    WHERE session_id = ? AND canonical_key = ? AND status = 'active'
                     ORDER BY confidence DESC, id DESC
                     """,
-                    (canonical_key,),
+                    (session_id, canonical_key),
                 ).fetchall()
+
+                for row in active_conflict:
+                    conn.execute(
+                        """
+                        UPDATE facts
+                        SET status = 'superseded',
+                            superseded_by = NULL,
+                            valid_to = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (row["id"],),
+                    )
 
                 cur = conn.execute(
                     """
                     INSERT INTO facts (
+                        session_id,
                         canonical_key,
                         value,
                         normalized_value,
                         confidence,
                         status,
                         source_message_id
-                    ) VALUES (?, ?, ?, ?, 'active', ?)
+                    ) VALUES (?, ?, ?, ?, ?, 'active', ?)
                     """,
-                    (canonical_key, fact.value.strip(), normalized_value, fact.confidence, source_message_id),
+                    (
+                        session_id,
+                        canonical_key,
+                        fact.value.strip(),
+                        normalized_value,
+                        fact.confidence,
+                        source_message_id,
+                    ),
                 )
                 new_id = int(cur.lastrowid)
 
@@ -300,10 +417,7 @@ class MemoryStore:
                     conn.execute(
                         """
                         UPDATE facts
-                        SET status = 'superseded',
-                            superseded_by = ?,
-                            valid_to = CURRENT_TIMESTAMP,
-                            updated_at = CURRENT_TIMESTAMP
+                        SET superseded_by = ?
                         WHERE id = ?
                         """,
                         (new_id, row["id"]),
@@ -349,21 +463,29 @@ class MemoryStore:
                         (decay, row["id"]),
                     )
 
-    def list_facts(self, limit: int = 10, include_inactive: bool = False) -> list[FactItem]:
-        status_filter = "" if include_inactive else "WHERE status = 'active'"
+    def list_facts(
+        self,
+        session_id: str,
+        limit: int = 10,
+        include_inactive: bool = False,
+    ) -> list[FactItem]:
+        status_filter = "WHERE session_id = ?"
+        if not include_inactive:
+            status_filter += " AND status = 'active'"
         with self._conn() as conn:
             rows = conn.execute(
                 f"""
-                SELECT id, canonical_key, value, confidence, status, decay_score
+                SELECT id, session_id, canonical_key, value, confidence, status, decay_score
                 FROM facts
                 {status_filter}
                 ORDER BY (confidence * decay_score) DESC, updated_at DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (session_id, limit),
             ).fetchall()
         return [
             FactItem(
+                session_id=row["session_id"],
                 id=row["id"],
                 key=row["canonical_key"],
                 value=row["value"],
@@ -375,17 +497,25 @@ class MemoryStore:
         ]
 
     # Manual operations below are logged to support /facts undo in CLI.
-    def add_fact_manual(self, key: str, value: str, confidence: float = 0.9) -> bool:
+    def add_fact_manual(
+        self,
+        session_id: str,
+        key: str,
+        value: str,
+        confidence: float = 0.9,
+    ) -> bool:
+        self.ensure_session(session_id)
         canonical_key = self._normalize_key(key)
         normalized_value = self._normalize_value(value)
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             existing_exact = conn.execute(
                 """
                 SELECT id FROM facts
-                WHERE canonical_key = ? AND normalized_value = ? AND status = 'active'
+                WHERE session_id = ? AND canonical_key = ? AND normalized_value = ? AND status = 'active'
                 ORDER BY id DESC LIMIT 1
                 """,
-                (canonical_key, normalized_value),
+                (session_id, canonical_key, normalized_value),
             ).fetchone()
             if existing_exact:
                 self._touch_fact(conn, existing_exact["id"], confidence)
@@ -399,16 +529,26 @@ class MemoryStore:
             superseded_ids = [
                 int(row["id"])
                 for row in conn.execute(
-                    "SELECT id FROM facts WHERE canonical_key = ? AND status = 'active'",
-                    (canonical_key,),
+                    "SELECT id FROM facts WHERE session_id = ? AND canonical_key = ? AND status = 'active'",
+                    (session_id, canonical_key),
                 ).fetchall()
             ]
+            for old_id in superseded_ids:
+                conn.execute(
+                    """
+                    UPDATE facts
+                    SET status = 'superseded', superseded_by = NULL, valid_to = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (old_id,),
+                )
             cur = conn.execute(
                 """
-                INSERT INTO facts (canonical_key, value, normalized_value, confidence, status)
-                VALUES (?, ?, ?, ?, 'active')
+                INSERT INTO facts (session_id, canonical_key, value, normalized_value, confidence, status)
+                VALUES (?, ?, ?, ?, ?, 'active')
                 """,
-                (canonical_key, value.strip(), normalized_value, confidence),
+                (session_id, canonical_key, value.strip(), normalized_value, confidence),
             )
             new_id = int(cur.lastrowid)
 
@@ -416,8 +556,7 @@ class MemoryStore:
                 conn.execute(
                     """
                     UPDATE facts
-                    SET status = 'superseded', superseded_by = ?, valid_to = CURRENT_TIMESTAMP,
-                        updated_at = CURRENT_TIMESTAMP
+                    SET superseded_by = ?
                     WHERE id = ?
                     """,
                     (new_id, old_id),
@@ -438,10 +577,20 @@ class MemoryStore:
         with self._conn() as conn:
             before = self._snapshot_fact(conn, fact_id)
             row = conn.execute(
-                "SELECT id FROM facts WHERE id = ?",
+                "SELECT id, session_id, canonical_key FROM facts WHERE id = ?",
                 (fact_id,),
             ).fetchone()
             if not row:
+                return False
+            duplicate = conn.execute(
+                """
+                SELECT id FROM facts
+                WHERE session_id = ? AND canonical_key = ? AND normalized_value = ? AND status = 'active' AND id != ?
+                LIMIT 1
+                """,
+                (row["session_id"], row["canonical_key"], normalized_value, fact_id),
+            ).fetchone()
+            if duplicate:
                 return False
             if confidence is None:
                 conn.execute(
@@ -472,7 +621,7 @@ class MemoryStore:
                 """
                 UPDATE facts
                 SET status = 'expired', valid_to = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND status != 'deleted'
+                WHERE id = ? AND status = 'active'
                 """,
                 (fact_id,),
             )
@@ -488,7 +637,7 @@ class MemoryStore:
                 """
                 UPDATE facts
                 SET status = 'deleted', valid_to = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND status != 'deleted'
                 """,
                 (fact_id,),
             )
@@ -500,12 +649,17 @@ class MemoryStore:
     def supersede_fact(self, fact_id: int, new_value: str, confidence: float = 0.8) -> bool:
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT canonical_key FROM facts WHERE id = ?",
+                "SELECT session_id, canonical_key FROM facts WHERE id = ?",
                 (fact_id,),
             ).fetchone()
             if not row:
                 return False
-        return self.add_fact_manual(key=row["canonical_key"], value=new_value, confidence=confidence)
+        return self.add_fact_manual(
+            session_id=row["session_id"],
+            key=row["canonical_key"],
+            value=new_value,
+            confidence=confidence,
+        )
 
     def undo_last_fact_action(self) -> bool:
         # Undo only targets manual governance operations, newest first.
@@ -533,8 +687,7 @@ class MemoryStore:
                         (int(old_id),),
                     )
             elif action_type == "touch":
-                # For lightweight undo, touch does not rollback confidence bump.
-                pass
+                return False
             elif action_type in {"edit", "expire", "delete"}:
                 before = payload.get("before")
                 if not before:
